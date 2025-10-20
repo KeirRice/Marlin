@@ -136,172 +136,193 @@ float segments_per_second = DEFAULT_SEGMENTS_PER_SECOND;
     //*/
   }
 
-#elif ENABLED(MP_SCARA)
+#endif // MORGAN_SCARA
 
-  void scara_set_axis_is_at_home(const AxisEnum axis) {
-    if (axis == Z_AXIS)
-      current_position.z = Z_HOME_POS;
-    else {
-      // MP_SCARA uses arm angles for AB home position
-      #ifndef SCARA_OFFSET_THETA1
-        #define SCARA_OFFSET_THETA1  12 // degrees
-      #endif
-      #ifndef SCARA_OFFSET_THETA2
-        #define SCARA_OFFSET_THETA2 131 // degrees
-      #endif
-      ab_float_t homeposition = { SCARA_OFFSET_THETA1, SCARA_OFFSET_THETA2 };
-      //DEBUG_ECHOLNPGM("homeposition A:", homeposition.a, " B:", homeposition.b);
+#if ENABLED(MP_SCARA) && ENABLED(SCARA_DUAL_CONTROL)
 
-      inverse_kinematics(homeposition);
-      forward_kinematics(delta.a, delta.b);
-      current_position[axis] = cartes[axis];
+// SCARA Dual Control System - Simplified Approach
+// No mode switching needed - smart G-code handling
 
-      //DEBUG_ECHOLNPGM_P(PSTR("Cartesian X"), current_position.x, SP_Y_LBL, current_position.y);
-      update_software_endstops(axis);
-    }
+// Global state for SCARA dual control
+struct SCARAState {
+  float theta1_unwrapped;  // Unwrapped angle A (continuous rotation)
+  float theta2_unwrapped;  // Unwrapped angle B (continuous rotation)
+  bool at_singularity;     // True when at origin (0,0)
+  float last_valid_theta1; // Last valid angle A before singularity
+  float last_valid_theta2; // Last valid angle B before singularity
+  bool initialized;        // True when state is initialized
+} scara_state = {0, 0, false, 0, 0, false};
+
+// Initialize SCARA state
+void init_scara_state() {
+  if (!scara_state.initialized) {
+    scara_state.theta1_unwrapped = SCARA_OFFSET_THETA1;
+    scara_state.theta2_unwrapped = SCARA_OFFSET_THETA2;
+    scara_state.last_valid_theta1 = SCARA_OFFSET_THETA1;
+    scara_state.last_valid_theta2 = SCARA_OFFSET_THETA2;
+    scara_state.at_singularity = false;
+    scara_state.initialized = true;
   }
+}
 
-  void inverse_kinematics(const xyz_pos_t &raw) {
-    const float x = raw.x, y = raw.y, c = HYPOT(x, y),
-                THETA3 = ATAN2(y, x),
-                THETA1 = THETA3 + ACOS((sq(c) + sq(L1) - sq(L2)) / (2.0f * c * L1)),
-                THETA2 = THETA3 - ACOS((sq(c) + sq(L2) - sq(L1)) / (2.0f * c * L2));
+// Get display angle (wrapped to 0-360 for user display)
+float get_display_theta1() {
+  return fmod(scara_state.theta1_unwrapped + 360.0f, 360.0f);
+}
 
-    delta.set(DEGREES(THETA1), DEGREES(THETA2), raw.z);
+float get_display_theta2() {
+  return fmod(scara_state.theta2_unwrapped + 360.0f, 360.0f);
+}
 
-    /*
-      DEBUG_POS("SCARA IK", raw);
-      DEBUG_POS("SCARA IK", delta);
-      SERIAL_ECHOLNPGM("  SCARA (x,y) ", x, ",", y," Theta1=", THETA1, " Theta2=", THETA2);
-    //*/
+// Direct angle control functions
+void set_scara_angles(const float theta1, const float theta2) {
+  scara_state.theta1_unwrapped = theta1;
+  scara_state.theta2_unwrapped = theta2;
+  scara_state.last_valid_theta1 = theta1;
+  scara_state.last_valid_theta2 = theta2;
+  
+  // Update delta for motion planning
+  delta.set(theta1, theta2, current_position.z);
+  
+  // Update Cartesian position for tracking
+  forward_kinematics(theta1, theta2);
+  current_position.x = cartes.x;
+  current_position.y = cartes.y;
+  sync_plan_position();
+}
+
+void set_scara_angle_a(const float theta1) {
+  scara_state.theta1_unwrapped = theta1;
+  scara_state.last_valid_theta1 = theta1;
+  
+  // Update delta for motion planning
+  delta.set(theta1, scara_state.theta2_unwrapped, current_position.z);
+  
+  // Update Cartesian position for tracking
+  forward_kinematics(theta1, scara_state.theta2_unwrapped);
+  current_position.x = cartes.x;
+  current_position.y = cartes.y;
+  sync_plan_position();
+}
+
+void set_scara_angle_b(const float theta2) {
+  scara_state.theta2_unwrapped = theta2;
+  scara_state.last_valid_theta2 = theta2;
+  
+  // Update delta for motion planning
+  delta.set(scara_state.theta1_unwrapped, theta2, current_position.z);
+  
+  // Update Cartesian position for tracking
+  forward_kinematics(scara_state.theta1_unwrapped, theta2);
+  current_position.x = cartes.x;
+  current_position.y = cartes.y;
+  sync_plan_position();
+}
+
+// Get current angles
+float get_scara_angle_a() {
+  return scara_state.theta1_unwrapped;
+}
+
+float get_scara_angle_b() {
+  return scara_state.theta2_unwrapped;
+}
+
+// Enhanced inverse kinematics for dual control
+void inverse_kinematics(const xyz_pos_t &raw) {
+  // Initialize state if needed
+  init_scara_state();
+  
+  const float x = raw.x - SCARA_OFFSET_X;
+  const float y = raw.y - SCARA_OFFSET_Y;
+  const float c = HYPOT(x, y);
+  
+  // Check for singularity at origin
+  if (c < SCARA_SINGULARITY_THRESHOLD) {
+    scara_state.at_singularity = true;
+    // Maintain current angles when at singularity
+    delta.set(scara_state.theta1_unwrapped, scara_state.theta2_unwrapped, raw.z);
+    return;
   }
-
-#elif ENABLED(AXEL_TPARA)
-
-  static constexpr xyz_pos_t robot_offset = { TPARA_OFFSET_X, TPARA_OFFSET_Y, TPARA_OFFSET_Z };
-
-  void scara_set_axis_is_at_home(const AxisEnum axis) {
-    if (axis == Z_AXIS)
-      current_position.z = Z_HOME_POS;
-    else {
-      xyz_pos_t homeposition = { X_HOME_POS, Y_HOME_POS, Z_HOME_POS };
-      //DEBUG_ECHOLNPGM_P(PSTR("homeposition X"), homeposition.x, SP_Y_LBL, homeposition.y, SP_Z_LBL, homeposition.z);
-
-      inverse_kinematics(homeposition);
-      forward_kinematics(delta.a, delta.b, delta.c);
-      current_position[axis] = cartes[axis];
-
-      //DEBUG_ECHOLNPGM_P(PSTR("Cartesian X"), current_position.x, SP_Y_LBL, current_position.y);
-      update_software_endstops(axis);
-    }
+  
+  scara_state.at_singularity = false;
+  
+  // Check reachability
+  if (c > SCARA_MAX_REACH) {
+    SERIAL_ECHOLNPGM("SCARA: Position unreachable (", c, "mm > ", SCARA_MAX_REACH, "mm)");
+    return;
   }
-
-  // Convert ABC inputs in degrees to XYZ outputs in mm
-  void forward_kinematics(const_float_t a, const_float_t b, const_float_t c) {
-    const float w = c - b,
-                r = L1 * cos(RADIANS(b)) + L2 * sin(RADIANS(w - (90 - b))),
-                x = r  * cos(RADIANS(a)),
-                y = r  * sin(RADIANS(a)),
-                rho2 = L1_2 + L2_2 - 2.0f * L1 * L2 * cos(RADIANS(w));
-
-    cartes = robot_offset + xyz_pos_t({ x, y, SQRT(rho2 - sq(x) - sq(y)) });
+  
+  // For equal-length arms, use simplified law of cosines
+  const float cos_angle = c / (2.0f * L1);
+  
+  if (cos_angle > 1.0f) {
+    SERIAL_ECHOLNPGM("SCARA: Position unreachable (arms too short)");
+    return;
   }
-
-  // Home YZ together, then X (or all at once). Based on quick_home_xy & home_delta
-  void home_TPARA() {
-    // Init the current position of all carriages to 0,0,0
-    current_position.reset();
-    destination.reset();
-    sync_plan_position();
-
-    // Disable stealthChop if used. Enable diag1 pin on driver.
-    #if ENABLED(SENSORLESS_HOMING)
-      TERN_(X_SENSORLESS, sensorless_t stealth_states_x = start_sensorless_homing_per_axis(X_AXIS));
-      TERN_(Y_SENSORLESS, sensorless_t stealth_states_y = start_sensorless_homing_per_axis(Y_AXIS));
-      TERN_(Z_SENSORLESS, sensorless_t stealth_states_z = start_sensorless_homing_per_axis(Z_AXIS));
-    #endif
-
-    //const int x_axis_home_dir = TOOL_X_HOME_DIR(active_extruder);
-
-    //const xy_pos_t pos { max_length(X_AXIS) , max_length(Y_AXIS) };
-    //const float mlz = max_length(X_AXIS),
-
-    // Move all carriages together linearly until an endstop is hit.
-    //do_blocking_move_to_xy_z(pos, mlz, homing_feedrate(Z_AXIS));
-
-    current_position.set(0, 0, max_length(Z_AXIS));
-    line_to_current_position(homing_feedrate(Z_AXIS));
-    planner.synchronize();
-
-    // Re-enable stealthChop if used. Disable diag1 pin on driver.
-    #if ENABLED(SENSORLESS_HOMING)
-      TERN_(X_SENSORLESS, end_sensorless_homing_per_axis(X_AXIS, stealth_states_x));
-      TERN_(Y_SENSORLESS, end_sensorless_homing_per_axis(Y_AXIS, stealth_states_y));
-      TERN_(Z_SENSORLESS, end_sensorless_homing_per_axis(Z_AXIS, stealth_states_z));
-    #endif
-
-    endstops.validate_homing_move();
-
-    // At least one motor has reached its endstop.
-    // Now re-home each motor separately.
-    homeaxis(A_AXIS);
-    homeaxis(C_AXIS);
-    homeaxis(B_AXIS);
-
-    // Set all carriages to their home positions
-    // Do this here all at once for Delta, because
-    // XYZ isn't ABC. Applying this per-tower would
-    // give the impression that they are the same.
-    LOOP_NUM_AXES(i) set_axis_is_at_home((AxisEnum)i);
-
-    sync_plan_position();
+  
+  const float angle = acos(cos_angle);
+  const float theta1 = atan2(y, x) - angle;
+  const float theta2 = 2.0f * angle;
+  
+  // Choose solution closest to current unwrapped angles for smooth motion
+  const float theta1_alt = atan2(y, x) + angle;
+  const float theta2_alt = -2.0f * angle;
+  
+  const float dist1 = fabs(theta1 - scara_state.theta1_unwrapped) + fabs(theta2 - scara_state.theta2_unwrapped);
+  const float dist2 = fabs(theta1_alt - scara_state.theta1_unwrapped) + fabs(theta2_alt - scara_state.theta2_unwrapped);
+  
+  if (dist2 < dist1) {
+    scara_state.theta1_unwrapped = theta1_alt;
+    scara_state.theta2_unwrapped = theta2_alt;
+  } else {
+    scara_state.theta1_unwrapped = theta1;
+    scara_state.theta2_unwrapped = theta2;
   }
+  
+  // Update last valid angles
+  scara_state.last_valid_theta1 = scara_state.theta1_unwrapped;
+  scara_state.last_valid_theta2 = scara_state.theta2_unwrapped;
+  
+  // Set delta for motion planning
+  delta.set(scara_state.theta1_unwrapped, scara_state.theta2_unwrapped, raw.z);
+}
 
-  void inverse_kinematics(const xyz_pos_t &raw) {
-    const xyz_pos_t spos = raw - robot_offset;
-
-    const float RXY = SQRT(HYPOT2(spos.x, spos.y)),
-                RHO2 = NORMSQ(spos.x, spos.y, spos.z),
-                //RHO = SQRT(RHO2),
-                LSS = L1_2 + L2_2,
-                LM = 2.0f * L1 * L2,
-
-                CG = (LSS - RHO2) / LM,
-                SG = SQRT(1 - POW(CG, 2)), // Method 2
-                K1 = L1 - L2 * CG,
-                K2 = L2 * SG,
-
-                // Angle of Body Joint
-                THETA = ATAN2(spos.y, spos.x),
-
-                // Angle of Elbow Joint
-                //GAMMA = ACOS(CG),
-                GAMMA = ATAN2(SG, CG), // Method 2
-
-                // Angle of Shoulder Joint, elevation angle measured from horizontal (r+)
-                //PHI = asin(spos.z/RHO) + asin(L2 * sin(GAMMA) / RHO),
-                PHI = ATAN2(spos.z, RXY) + ATAN2(K2, K1),   // Method 2
-
-                // Elbow motor angle measured from horizontal, same frame as shoulder  (r+)
-                PSI = PHI + GAMMA;
-
-    delta.set(DEGREES(THETA), DEGREES(PHI), DEGREES(PSI));
-
-    //SERIAL_ECHOLNPGM(" SCARA (x,y,z) ", spos.x , ",", spos.y, ",", spos.z, " Rho=", RHO, " Rho2=", RHO2, " Theta=", THETA, " Phi=", PHI, " Psi=", PSI, " Gamma=", GAMMA);
-  }
-
-#endif
-
+// Enhanced position reporting
 void scara_report_positions() {
-  SERIAL_ECHOLNPGM("SCARA Theta:", planner.get_axis_position_degrees(A_AXIS)
-    #if ENABLED(AXEL_TPARA)
-      , "  Phi:", planner.get_axis_position_degrees(B_AXIS)
-      , "  Psi:", planner.get_axis_position_degrees(C_AXIS)
-    #else
-      , "  Psi" TERN_(MORGAN_SCARA, "+Theta") ":", planner.get_axis_position_degrees(B_AXIS)
-    #endif
-  );
+  SERIAL_ECHOPGM("SCARA A:", get_display_theta1(), " B:", get_display_theta2());
+  SERIAL_ECHOPGM(" X:", current_position.x, " Y:", current_position.y, " Z:", current_position.z);
+  if (scara_state.at_singularity) {
+    SERIAL_ECHOPGM(" (SINGULARITY)");
+  }
   SERIAL_EOL();
 }
+
+// Home continuous SCARA (no physical endstops needed)
+void home_continuous_scara() {
+  init_scara_state();
+  
+  // Set home position angles
+  scara_state.theta1_unwrapped = SCARA_OFFSET_THETA1;
+  scara_state.theta2_unwrapped = SCARA_OFFSET_THETA2;
+  scara_state.last_valid_theta1 = SCARA_OFFSET_THETA1;
+  scara_state.last_valid_theta2 = SCARA_OFFSET_THETA2;
+  scara_state.at_singularity = false;
+  
+  // Update delta for motion planning
+  delta.set(scara_state.theta1_unwrapped, scara_state.theta2_unwrapped, current_position.z);
+  
+  // Update Cartesian position using forward kinematics
+  forward_kinematics(scara_state.theta1_unwrapped, scara_state.theta2_unwrapped);
+  current_position.x = cartes.x;
+  current_position.y = cartes.y;
+  
+  // Sync with planner
+  sync_plan_position();
+  
+  SERIAL_ECHOLNPGM("SCARA: Homed to A:", get_display_theta1(), " B:", get_display_theta2());
+}
+
+#endif // MP_SCARA && SCARA_DUAL_CONTROL
 
 #endif // IS_SCARA

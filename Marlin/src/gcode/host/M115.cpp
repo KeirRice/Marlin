@@ -225,6 +225,12 @@ void GcodeSuite::M115() {
     // CONFIG_EXPORT
     cap_line(F("CONFIG_EXPORT"), ENABLED(CONFIGURATION_EMBEDDING));
 
+    // SCARA DUAL CONTROL
+    #if ENABLED(MP_SCARA) && ENABLED(SCARA_DUAL_CONTROL)
+      cap_line(F("SCARA_DUAL_CONTROL"));
+      cap_line(F("SCARA_ANGLE_CONTROL"));
+    #endif
+
     // Machine Geometry
     #if ENABLED(M115_GEOMETRY_REPORT)
       constexpr xyz_pos_t bmin{0},

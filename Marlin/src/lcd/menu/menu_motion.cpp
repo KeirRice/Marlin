@@ -47,6 +47,10 @@
   #include "../../module/delta.h"
 #endif
 
+#if ENABLED(MP_SCARA) && ENABLED(SCARA_DUAL_CONTROL)
+  #include "../../module/scara.h"
+#endif
+
 #if HAS_LEVELING
   #include "../../module/planner.h"
   #include "../../feature/bedlevel/bedlevel.h"
@@ -72,6 +76,26 @@ void lcd_move_axis(const AxisEnum axis) {
       }
     #endif
 
+    // SCARA dual control - special handling for A and B axes
+    #if ENABLED(MP_SCARA) && ENABLED(SCARA_DUAL_CONTROL)
+      if (axis == A_AXIS || axis == B_AXIS) {
+        // For SCARA A/B axes, we need to handle angle control
+        const float diff = float(int32_t(ui.encoderPosition)) * ui.manual_move.menu_scale;
+        
+        if (axis == A_AXIS) {
+          // Move A axis (theta1) - no limits for continuous rotation
+          set_scara_angle_a(get_scara_angle_a() + diff);
+        } else if (axis == B_AXIS) {
+          // Move B axis (theta2) - no limits for continuous rotation  
+          set_scara_angle_b(get_scara_angle_b() + diff);
+        }
+        
+        ui.refresh(LCDVIEW_REDRAW_NOW);
+        ui.encoderPosition = 0;
+        return;
+      }
+    #endif
+
     // Get the new position
     const float diff = float(int32_t(ui.encoderPosition)) * ui.manual_move.menu_scale;
     (void)ui.manual_move.apply_diff(axis, diff, min, max);
@@ -81,7 +105,20 @@ void lcd_move_axis(const AxisEnum axis) {
   ui.encoderPosition = 0;
   if (ui.should_draw()) {
     MenuEditItemBase::itemIndex = axis;
-    const float pos = ui.manual_move.axis_value(axis);
+    
+    #if ENABLED(MP_SCARA) && ENABLED(SCARA_DUAL_CONTROL)
+      float pos;
+      if (axis == A_AXIS) {
+        pos = get_scara_angle_a();
+      } else if (axis == B_AXIS) {
+        pos = get_scara_angle_b();
+      } else {
+        pos = ui.manual_move.axis_value(axis);
+      }
+    #else
+      const float pos = ui.manual_move.axis_value(axis);
+    #endif
+    
     if (parser.using_inch_units()) {
       const float imp_pos = LINEAR_UNIT(pos);
       MenuEditItemBase::draw_edit_screen(GET_TEXT_F(MSG_MOVE_N), ftostr63(imp_pos));
@@ -211,25 +248,41 @@ void menu_move() {
   #endif
 
   // Move submenu for each axis
-  if (NONE(IS_KINEMATIC, NO_MOTION_BEFORE_HOMING) || all_axes_homed()) {
-    if (TERN1(DELTA, current_position.z <= delta_clip_start_height)) {
-      SUBMENU_N(X_AXIS, MSG_MOVE_N, []{ _menu_move_distance(X_AXIS, []{ lcd_move_axis(X_AXIS); }); });
-      #if HAS_Y_AXIS
-        SUBMENU_N(Y_AXIS, MSG_MOVE_N, []{ _menu_move_distance(Y_AXIS, []{ lcd_move_axis(Y_AXIS); }); });
+  #if ENABLED(MP_SCARA) && ENABLED(SCARA_DUAL_CONTROL)
+    // SCARA dual control - always allow motion controls
+    SUBMENU_N(X_AXIS, MSG_MOVE_N, []{ _menu_move_distance(X_AXIS, []{ lcd_move_axis(X_AXIS); }); });
+    #if HAS_Y_AXIS
+      SUBMENU_N(Y_AXIS, MSG_MOVE_N, []{ _menu_move_distance(Y_AXIS, []{ lcd_move_axis(Y_AXIS); }); });
+    #endif
+    #if HAS_Z_AXIS
+      SUBMENU_N(Z_AXIS, MSG_MOVE_N, []{ _menu_move_distance(Z_AXIS, []{ lcd_move_axis(Z_AXIS); }); });
+    #endif
+    // Add A, B angle controls
+    SUBMENU_N(A_AXIS, MSG_MOVE_N, []{ _menu_move_distance(A_AXIS, []{ lcd_move_axis(A_AXIS); }); });
+    SUBMENU_N(B_AXIS, MSG_MOVE_N, []{ _menu_move_distance(B_AXIS, []{ lcd_move_axis(B_AXIS); }); });
+  #else
+    if (NONE(IS_KINEMATIC, NO_MOTION_BEFORE_HOMING) || all_axes_homed()) {
+      // Standard kinematic systems (DELTA, etc.) - original logic
+      if (TERN1(DELTA, current_position.z <= delta_clip_start_height)) {
+        SUBMENU_N(X_AXIS, MSG_MOVE_N, []{ _menu_move_distance(X_AXIS, []{ lcd_move_axis(X_AXIS); }); });
+        #if HAS_Y_AXIS
+          SUBMENU_N(Y_AXIS, MSG_MOVE_N, []{ _menu_move_distance(Y_AXIS, []{ lcd_move_axis(Y_AXIS); }); });
+        #endif
+      }
+      else {
+        #if ENABLED(DELTA)
+          ACTION_ITEM(MSG_FREE_XY, []{ line_to_z(delta_clip_start_height); ui.synchronize(); });
+        #endif
+      }
+      #if HAS_Z_AXIS
+        #define _AXIS_MOVE(N) SUBMENU_N(N, MSG_MOVE_N, []{ _menu_move_distance(AxisEnum(N), []{ lcd_move_axis(AxisEnum(N)); }); });
+        REPEAT_S(2, NUM_AXES, _AXIS_MOVE);
       #endif
     }
     else {
-      #if ENABLED(DELTA)
-        ACTION_ITEM(MSG_FREE_XY, []{ line_to_z(delta_clip_start_height); ui.synchronize(); });
-      #endif
+      GCODES_ITEM(MSG_AUTO_HOME, FPSTR(G28_STR));
     }
-    #if HAS_Z_AXIS
-      #define _AXIS_MOVE(N) SUBMENU_N(N, MSG_MOVE_N, []{ _menu_move_distance(AxisEnum(N), []{ lcd_move_axis(AxisEnum(N)); }); });
-      REPEAT_S(2, NUM_AXES, _AXIS_MOVE);
-    #endif
-  }
-  else
-    GCODES_ITEM(MSG_AUTO_HOME, FPSTR(G28_STR));
+  #endif
 
   #if ANY(SWITCHING_EXTRUDER, SWITCHING_NOZZLE, MAGNETIC_SWITCHING_TOOLHEAD)
 
@@ -321,8 +374,14 @@ void menu_motion() {
   //
   // Move Axis
   //
-  if (TERN1(DELTA, all_axes_homed()))
+  #if ENABLED(MP_SCARA) && ENABLED(SCARA_DUAL_CONTROL)
+    // SCARA dual control - always allow motion controls
     SUBMENU(MSG_MOVE_AXIS, menu_move);
+  #else
+    if (TERN1(DELTA, all_axes_homed())) {
+      SUBMENU(MSG_MOVE_AXIS, menu_move);
+    }
+  #endif
 
   //
   // Auto Home

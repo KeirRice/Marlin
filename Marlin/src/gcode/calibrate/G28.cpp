@@ -369,6 +369,25 @@ void GcodeSuite::G28() {
 
     home_TPARA();
 
+  #elif ENABLED(MP_SCARA) && ENABLED(SCARA_CONTINUOUS_ROTATION)
+
+    // Special homing for continuous rotation SCARA
+    const bool homeZ = TERN0(HAS_Z_AXIS, parser.seen_test('Z'));
+    const bool doZ = homeZ; // for NANODLP_Z_SYNC
+    
+    // Home XY using continuous rotation method
+    home_continuous_scara();
+    
+    // Home Z if needed
+    if (homeZ) {
+      #if ENABLED(Z_SAFE_HOMING)
+        if (TERN1(POWER_LOSS_RECOVERY, !parser.seen_test('H'))) home_z_safely(); else homeaxis(Z_AXIS);
+      #else
+        homeaxis(Z_AXIS);
+      #endif
+      TERN_(HAS_BED_PROBE, probe.move_z_after_homing());
+    }
+
   #else
 
     #define _UNSAFE(A) (homeZ && TERN0(Z_SAFE_HOMING, axes_should_home(_BV(A##_AXIS))))

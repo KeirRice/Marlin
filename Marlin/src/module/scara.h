@@ -51,3 +51,20 @@ extern float segments_per_second;
 void inverse_kinematics(const xyz_pos_t &raw);
 void scara_set_axis_is_at_home(const AxisEnum axis);
 void scara_report_positions();
+
+#if ENABLED(MP_SCARA) && ENABLED(SCARA_SMOOTH_MOTION)
+  // Smooth motion functions for 360-degree continuous rotation
+  float get_display_theta1();
+  float get_display_theta2();
+  void init_scara_state();
+  void home_continuous_scara();
+  
+  #if ENABLED(SCARA_DUAL_CONTROL)
+    // Direct angle control (simplified - no mode switching)
+    void set_scara_angles(const float theta1, const float theta2);
+    void set_scara_angle_a(const float theta1);
+    void set_scara_angle_b(const float theta2);
+    float get_scara_angle_a();
+    float get_scara_angle_b();
+  #endif
+#endif

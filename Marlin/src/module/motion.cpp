@@ -1754,12 +1754,25 @@ void prepare_line_to_destination() {
       #endif
     }
 
-    #if ANY(MORGAN_SCARA, MP_SCARA)
+    #if ENABLED(MORGAN_SCARA)
       // Tell the planner the axis is at 0
       current_position[axis] = 0;
       sync_plan_position();
       current_position[axis] = distance;
       line_to_current_position(home_fr_mm_s);
+    #elif ENABLED(MP_SCARA)
+      #if ENABLED(SCARA_CONTINUOUS_ROTATION)
+        // For continuous rotation, no physical homing needed
+        // Just set the position directly
+        current_position[axis] = 0;
+        sync_plan_position();
+      #else
+        // Standard MP_SCARA homing (if not continuous rotation)
+        current_position[axis] = 0;
+        sync_plan_position();
+        current_position[axis] = distance;
+        line_to_current_position(home_fr_mm_s);
+      #endif
     #else
       // Get the ABC or XYZ positions in mm
       abce_pos_t target = planner.get_axis_positions_mm();
@@ -1952,9 +1965,18 @@ void prepare_line_to_destination() {
 
   void homeaxis(const AxisEnum axis) {
 
-    #if ANY(MORGAN_SCARA, MP_SCARA)
+    #if ENABLED(MORGAN_SCARA)
       // Only Z homing (with probe) is permitted
       if (axis != Z_AXIS) { BUZZ(100, 880); return; }
+    #elif ENABLED(MP_SCARA)
+      #if ENABLED(SCARA_CONTINUOUS_ROTATION)
+        // For continuous rotation, X and Y homing is allowed (no endstops needed)
+        // Z homing still requires proper setup
+        if (axis == Z_AXIS && !HAS_Z_AXIS) { BUZZ(100, 880); return; }
+      #else
+        // Only Z homing (with probe) is permitted for standard MP_SCARA
+        if (axis != Z_AXIS) { BUZZ(100, 880); return; }
+      #endif
     #else
       #define _CAN_HOME(A) (axis == _AXIS(A) && ( \
            ENABLED(A##_SPI_SENSORLESS) \

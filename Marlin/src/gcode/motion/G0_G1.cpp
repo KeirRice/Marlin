@@ -25,6 +25,10 @@
 
 #include "../../MarlinCore.h"
 
+#if ENABLED(MP_SCARA) && ENABLED(SCARA_DUAL_CONTROL)
+  #include "../../module/scara.h"
+#endif
+
 #if ALL(FWRETRACT, FWRETRACT_AUTORETRACT)
   #include "../../feature/fwretract.h"
 #endif
@@ -92,6 +96,51 @@ void GcodeSuite::G0_G1(TERN_(HAS_FAST_MOVES, const bool fast_move/*=false*/)) {
   #endif // FWRETRACT
 
   #if IS_SCARA
+    #if ENABLED(MP_SCARA) && ENABLED(SCARA_DUAL_CONTROL)
+      // Smart G-code handling for SCARA dual control
+      bool has_a = parser.seenval('A');
+      bool has_b = parser.seenval('B');
+      bool has_xy = parser.seenval('X') || parser.seenval('Y');
+      
+      if (has_a || has_b) {
+        // Direct angle control - handle A/B axes only
+        if (has_a) {
+          const float angle_a = parser.value_float();
+          if (relative_mode) {
+            set_scara_angle_a(get_scara_angle_a() + angle_a);
+          } else {
+            set_scara_angle_a(angle_a);
+          }
+        }
+        
+        if (has_b) {
+          const float angle_b = parser.value_float();
+          if (relative_mode) {
+            set_scara_angle_b(get_scara_angle_b() + angle_b);
+          } else {
+            set_scara_angle_b(angle_b);
+          }
+        }
+        
+        // If A/B axes are specified, ignore X/Y and only handle Z if present
+        if (has_xy) {
+          SERIAL_ECHOLNPGM("Warning: A/B angles specified, ignoring X/Y coordinates");
+        }
+        
+        // Handle Z axis if present
+        if (parser.seenval('Z')) {
+          destination.z = parser.value_axis_units(Z_AXIS);
+          if (relative_mode) {
+            destination.z += current_position.z;
+          }
+          current_position.z = destination.z;
+          sync_plan_position();
+        }
+        
+        return; // Skip normal motion planning for angle control
+      }
+    #endif
+    
     fast_move ? prepare_fast_move_to_destination() : prepare_line_to_destination();
   #else
     prepare_line_to_destination();

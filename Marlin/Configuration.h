@@ -1000,8 +1000,8 @@
 
   // SCARA tower offset (position of Tower relative to bed zero position)
   // This needs to be reasonably accurate as it defines the printbed position in the SCARA space.
-  #define SCARA_OFFSET_X  100       // (mm)
-  #define SCARA_OFFSET_Y  -56       // (mm)
+  #define SCARA_OFFSET_X  0         // (mm) - Tower at center for 360-degree rotation
+  #define SCARA_OFFSET_Y  0         // (mm) - Tower at center for 360-degree rotation
 
   #if ENABLED(MORGAN_SCARA)
 
@@ -1016,8 +1016,27 @@
 
   #elif ENABLED(MP_SCARA)
 
-    #define SCARA_OFFSET_THETA1  12 // degrees
-    #define SCARA_OFFSET_THETA2 131 // degrees
+    // Smooth motion configuration for 360-degree continuous rotation
+    #define SCARA_SMOOTH_MOTION
+    #define SCARA_CONTINUOUS_ROTATION
+    #define SCARA_EQUAL_ARMS
+    #define SCARA_SINGULARITY_HANDLING
+    
+    // Dual control system - both Cartesian (XYZ) and Angle (AB) control
+    #define SCARA_DUAL_CONTROL
+    #define SCARA_ANGLE_CONTROL
+    
+    // Singularity and motion parameters
+    #define SCARA_SINGULARITY_THRESHOLD 0.1f  // mm - distance from origin considered singularity
+    #define SCARA_ANGLE_WRAP_THRESHOLD 180.0f  // degrees - threshold for shortest path wrapping
+    #define SCARA_MAX_REACH 300.0f             // mm - L1 + L2 for equal arms
+    
+    // Angle synchronization threshold
+    #define SCARA_ANGLE_SYNC_THRESHOLD 0.1f    // degrees - threshold for angle synchronization
+    
+    // Home position - both arms at 0 degrees for equal-length setup
+    #define SCARA_OFFSET_THETA1  0.0f  // degrees - start position
+    #define SCARA_OFFSET_THETA2  0.0f  // degrees - start position
 
   #endif
 
